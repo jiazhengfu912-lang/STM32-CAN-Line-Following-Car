@@ -143,7 +143,7 @@ void rep(void);
 
 /* A 点终点判定：先经过 C、D，再按右侧先扫线、左侧后扫线的顺序确认。 */
 #define LINE_FOLLOW_A_MARKER_ARM_DISTANCE_MM      6200U /* 达到该平均行程前忽略所有终点标记。 */
-#define LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS       3U /* 单侧横线标记至少需要检测到的黑线传感器数量。 */
+#define LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS       2U /* 单侧横线标记至少需要检测到的黑线传感器数量；右侧与左侧合计为 4 路。 */
 #define LINE_FOLLOW_A_MARKER_VALID_SAMPLES           3U /* 右侧和左侧标记各自需要连续满足的控制周期数。 */
 #define LINE_FOLLOW_A_MARKER_SEQUENCE_MAX_DISTANCE_MM 300U /* 右侧标记到左侧标记允许的最大平均行程，单位：mm。 */
 
