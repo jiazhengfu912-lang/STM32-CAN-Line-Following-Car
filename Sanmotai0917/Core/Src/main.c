@@ -136,47 +136,47 @@ void rep(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* Hardware calibration. Change only after replacing a motor or wheel. */
-#define M2006_GEAR_RATIO                         36    /* M2006 output reduction ratio. */
-#define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U /* Feedback counts per motor-shaft revolution. */
-#define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U /* 65 mm wheel circumference in micrometres. */
+/* 硬件标定参数：仅在更换电机或车轮后修改。 */
+#define M2006_GEAR_RATIO                         36    /* M2006 电机减速比。 */
+#define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U /* 电机轴每圈的反馈编码器计数。 */
+#define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U /* 直径 65 mm 车轮的周长，单位：微米。 */
 
-/* A-to-B distance calibration. Adjust A_TO_B_DISTANCE_MM for real stop error. */
-#define LINE_FOLLOW_A_TO_B_DISTANCE_MM            1500U /* A-to-B nominal path length in mm. */
-#define LINE_FOLLOW_STOP_APPROACH_DISTANCE_MM      250U /* Remaining distance where speed reduction begins. */
-#define LINE_FOLLOW_STOP_MIN_DISTANCE_MM            50U /* Remaining distance where minimum speed is held. */
-#define LINE_FOLLOW_STOP_MIN_OUTPUT_RPM             12  /* Minimum wheel output speed near B. */
-#define LINE_FOLLOW_STOP_SPEED_RPM                  90  /* Motor feedback rpm considered stopped. */
-#define LINE_FOLLOW_STOP_SETTLE_TIME_MS            100U /* Required continuous stopped time. */
-#define LINE_FOLLOW_STOP_TIMEOUT_MS               1500U /* Maximum active PID braking duration. */
+/* A 点至 B 点距离标定：实测停车偏差后，仅微调 A_TO_B_DISTANCE_MM。 */
+#define LINE_FOLLOW_A_TO_B_DISTANCE_MM            1500U /* A 到 B 的标称路线长度，单位：mm。 */
+#define LINE_FOLLOW_STOP_APPROACH_DISTANCE_MM      250U /* 剩余该距离时开始减速，单位：mm。 */
+#define LINE_FOLLOW_STOP_MIN_DISTANCE_MM            50U /* 剩余该距离内保持最低速度，单位：mm。 */
+#define LINE_FOLLOW_STOP_MIN_OUTPUT_RPM             12  /* 接近 B 点时的最低车轮输出转速。 */
+#define LINE_FOLLOW_STOP_SPEED_RPM                  90  /* 判定电机停止的反馈转速阈值。 */
+#define LINE_FOLLOW_STOP_SETTLE_TIME_MS            100U /* 低于停止阈值后需持续的时间，单位：ms。 */
+#define LINE_FOLLOW_STOP_TIMEOUT_MS               1500U /* 主动 PID 制动的最长时间，单位：ms。 */
 
-/* Line-follow tuning. All speed values below are wheel output rpm. */
-#define LINE_FOLLOW_START_DELAY_MS                3000U /* Power-on wait before looking for line. */
-#define LINE_FOLLOW_FEEDBACK_TIMEOUT_MS           100U  /* CAN feedback loss threshold. */
-#define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U /* Maximum continuous run time. */
-#define LINE_FOLLOW_BASE_OUTPUT_RPM               36    /* Straight-line base speed. */
-#define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* Constant right correction for current chassis. */
-#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3    /* Extra correction during right turns. */
-#define LINE_FOLLOW_LOST_OUTPUT_RPM               12    /* Search speed after line is lost. */
-#define LINE_FOLLOW_KP_RPM_PER_ERROR              3     /* Larger gives stronger line-error correction. */
-#define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1     /* Larger reacts more to error changes. */
-#define LINE_FOLLOW_MAX_D_TURN_RPM                4     /* Limit on the D correction term. */
-#define LINE_FOLLOW_MAX_TURN_RPM                  18    /* Overall steering correction limit. */
-#define LINE_FOLLOW_LOST_TURN_RPM                 8     /* Search steering magnitude. */
-#define LINE_FOLLOW_SENSOR_FILTER_SAMPLES         3U    /* Majority-filter frame count. */
-#define LINE_FOLLOW_START_VALID_SAMPLES            3U    /* Valid line frames required to start at A. */
-#define LINE_FOLLOW_ERROR_JUMP_LIMIT              3     /* Reject larger sensor-position jumps. */
-#define LINE_FOLLOW_TURN_SLEW_RPM                 3     /* Maximum steering change every 10 ms. */
+/* 循迹调参区：下列转速均为车轮输出转速，单位：rpm。 */
+#define LINE_FOLLOW_START_DELAY_MS                3000U /* 上电后开始检测黑线前的等待时间。 */
+#define LINE_FOLLOW_FEEDBACK_TIMEOUT_MS           100U  /* CAN 电机反馈丢失判定阈值。 */
+#define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U /* 连续运行的最大时间保护。 */
+#define LINE_FOLLOW_BASE_OUTPUT_RPM               36    /* 直线循迹基础速度。 */
+#define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* 针对当前车架的恒定向右修正量。 */
+#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3    /* 右转时额外增加的修正量。 */
+#define LINE_FOLLOW_LOST_OUTPUT_RPM               12    /* 丢线搜索时的行驶速度。 */
+#define LINE_FOLLOW_KP_RPM_PER_ERROR              3     /* 增大可加强横向误差修正。 */
+#define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1     /* 增大可加强误差突变时的响应。 */
+#define LINE_FOLLOW_MAX_D_TURN_RPM                4     /* D 项转向修正的最大值。 */
+#define LINE_FOLLOW_MAX_TURN_RPM                  18    /* 总转向修正的最大值。 */
+#define LINE_FOLLOW_LOST_TURN_RPM                 8     /* 丢线搜索时的转向量。 */
+#define LINE_FOLLOW_SENSOR_FILTER_SAMPLES         3U    /* 多数滤波使用的连续采样帧数。 */
+#define LINE_FOLLOW_START_VALID_SAMPLES            3U    /* 在 A 点允许起步前要求的有效黑线帧数。 */
+#define LINE_FOLLOW_ERROR_JUMP_LIMIT              3     /* 超过该位置跳变的传感器结果会被拒绝。 */
+#define LINE_FOLLOW_TURN_SLEW_RPM                 3     /* 每 10 ms 允许的最大转向变化量。 */
 
-/* Motor speed PID tuning for 0x201 and 0x202. Values are PID internal units. */
-#define MOTOR_SPEED_PID_MAX_OUTPUT              4500U  /* Current command output limit. */
-#define MOTOR_SPEED_PID_INTEGRAL_LIMIT          5000U  /* Integral accumulator limit. */
-#define MOTOR_SPEED_PID_DEADBAND                   1.0f /* Ignore speed error inside this band. */
-#define MOTOR_SPEED_PID_CONTROL_PERIOD             0U   /* Reserved by pid.c; currently not used. */
-#define MOTOR_SPEED_PID_MAX_ERROR                8000  /* Reserved by pid.c; currently not used. */
-#define MOTOR_SPEED_PID_KP                         0.4f /* Proportional speed correction. */
-#define MOTOR_SPEED_PID_KI                         0.03f /* Integral speed correction. */
-#define MOTOR_SPEED_PID_KD                         0.0f /* Differential speed correction; disabled. */
+/* 0x201、0x202 电机速度 PID 调参区，数值为 PID 内部单位。 */
+#define MOTOR_SPEED_PID_MAX_OUTPUT              4500U  /* 电流命令输出限幅。 */
+#define MOTOR_SPEED_PID_INTEGRAL_LIMIT          5000U  /* 积分累加限幅。 */
+#define MOTOR_SPEED_PID_DEADBAND                   1.0f /* 小于该转速误差时不调节。 */
+#define MOTOR_SPEED_PID_CONTROL_PERIOD             0U   /* pid.c 当前未使用，仅保留参数位置。 */
+#define MOTOR_SPEED_PID_MAX_ERROR                8000  /* pid.c 当前未使用，仅保留参数位置。 */
+#define MOTOR_SPEED_PID_KP                         0.4f /* 比例调节系数。 */
+#define MOTOR_SPEED_PID_KI                         0.03f /* 积分调节系数。 */
+#define MOTOR_SPEED_PID_KD                         0.0f /* 微分调节系数；当前关闭。 */
 
 typedef enum
 {
@@ -211,9 +211,9 @@ typedef struct
   uint8_t encoder_ready;
 } LineFollowControl;
 
-/* Sensor mapping calibration: edit only after changing module wiring or placement. */
-/* Raw bits are L01, L02, L03, L04, R01, R02, R03, R04. */
-/* Physical left-to-right order is L01, L02, L03, L04, R04, R03, R02, R01. */
+/* 传感器映射标定：仅在修改模块接线或安装位置后调整。 */
+/* 原始位顺序为 L01、L02、L03、L04、R01、R02、R03、R04。 */
+/* 物理从左到右顺序为 L01、L02、L03、L04、R04、R03、R02、R01。 */
 static const int8_t line_sensor_weight[8] = {-7, -5, -3, -1, 7, 5, 3, 1};
 static LineFollowControl line_follow = {LINE_FOLLOW_WAIT_FEEDBACK};
 
