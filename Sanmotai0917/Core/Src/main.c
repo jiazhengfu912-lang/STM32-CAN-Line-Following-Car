@@ -142,6 +142,7 @@ void rep(void);
 #define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U
 #define MOTOR_SPEED_PID_KD                         0.02f
 #define LINE_FOLLOW_BASE_OUTPUT_RPM               36
+#define LINE_FOLLOW_RIGHT_BIAS_RPM                 6
 #define LINE_FOLLOW_LOST_OUTPUT_RPM               12
 #define LINE_FOLLOW_KP_RPM_PER_ERROR              3
 #define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1
@@ -416,8 +417,8 @@ static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
   turn_rpm = LineFollow_ApplyTurnSlew(target_turn_rpm);
   line_follow.last_control_error = line_error;
 
-  return LineFollow_SendSpeedCommand(LINE_FOLLOW_BASE_OUTPUT_RPM - turn_rpm,
-                                     LINE_FOLLOW_BASE_OUTPUT_RPM + turn_rpm);
+  return LineFollow_SendSpeedCommand(LINE_FOLLOW_BASE_OUTPUT_RPM + LINE_FOLLOW_RIGHT_BIAS_RPM - turn_rpm,
+                                     LINE_FOLLOW_BASE_OUTPUT_RPM - LINE_FOLLOW_RIGHT_BIAS_RPM + turn_rpm);
 }
 
 static uint8_t LineFollow_SendSearchCommand(void)
