@@ -158,7 +158,12 @@ void rep(void);
 #define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U /* 连续运行的最大时间保护。 */
 #define LINE_FOLLOW_BASE_OUTPUT_RPM               36    /* 直线循迹基础速度。 */
 #define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* 针对当前车架的恒定向右修正量。 */
-#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           4    /* 右转时额外增加的修正量。 */
+#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3    /* 右转时额外增加的修正量。 */
+#define LINE_FOLLOW_STRAIGHT_TRIM_TARGET_RPM     -2.0f  /* 直线专用补偿目标；正值向右修正，黑线偏车身左侧时使用负值向左修正。 */
+#define LINE_FOLLOW_STRAIGHT_TRIM_RAMP_RPM        0.08f  /* 进入直线后每 10 ms 靠近目标补偿的最大变化量。 */
+#define LINE_FOLLOW_STRAIGHT_TRIM_RELEASE_RPM     0.25f  /* 进入弯道后每 10 ms 回零的最大变化量。 */
+#define LINE_FOLLOW_STRAIGHT_TURN_WINDOW_RPM      2.0f   /* 实际转向量接近恒定修正量时，判定为直线的允许范围。 */
+#define LINE_FOLLOW_STRAIGHT_CONFIRM_SAMPLES        5U   /* 连续满足直线条件后才开始施加补偿的控制周期数。 */
 #define LINE_FOLLOW_LOST_OUTPUT_RPM               12    /* 丢线搜索时的行驶速度。 */
 #define LINE_FOLLOW_KP_RPM_PER_ERROR              3.0f  /* 增大可加强横向误差修正，支持小数。 */
 #define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1.2f  /* 增大可加强误差突变时的响应，支持小数。 */
@@ -207,9 +212,11 @@ typedef struct
   int16_t last_control_error;
   int16_t last_nonzero_error;
   float last_turn_rpm;
+  float straight_trim_rpm;
   uint8_t sensor_history[LINE_FOLLOW_SENSOR_FILTER_SAMPLES];
   uint8_t sensor_history_count;
   uint8_t valid_line_count;
+  uint8_t straight_confirm_count;
   uint8_t a_marker_right_valid_count;
   uint8_t a_marker_left_valid_count;
   uint8_t a_marker_right_seen;
@@ -435,6 +442,67 @@ static float LineFollow_ApplyTurnSlew(float target_turn_rpm)
   return line_follow.last_turn_rpm;
 }
 
+static float LineFollow_Approach(float current_value, float target_value, float step)
+{
+  if (current_value < target_value)
+  {
+    current_value += step;
+    if (current_value > target_value)
+    {
+      current_value = target_value;
+    }
+  }
+  else if (current_value > target_value)
+  {
+    current_value -= step;
+    if (current_value < target_value)
+    {
+      current_value = target_value;
+    }
+  }
+
+  return current_value;
+}
+
+static void LineFollow_ResetStraightTrim(void)
+{
+  line_follow.straight_trim_rpm = 0.0f;
+  line_follow.straight_confirm_count = 0U;
+}
+
+static void LineFollow_UpdateStraightTrim(float untrimmed_turn_rpm)
+{
+  float lower_limit = LINE_FOLLOW_RIGHT_BIAS_RPM - LINE_FOLLOW_STRAIGHT_TURN_WINDOW_RPM;
+  float upper_limit = LINE_FOLLOW_RIGHT_BIAS_RPM + LINE_FOLLOW_STRAIGHT_TURN_WINDOW_RPM;
+
+  if ((untrimmed_turn_rpm >= lower_limit) && (untrimmed_turn_rpm <= upper_limit))
+  {
+    if (line_follow.straight_confirm_count < LINE_FOLLOW_STRAIGHT_CONFIRM_SAMPLES)
+    {
+      line_follow.straight_confirm_count++;
+    }
+  }
+  else
+  {
+    line_follow.straight_confirm_count = 0U;
+  }
+
+  if (line_follow.straight_confirm_count >= LINE_FOLLOW_STRAIGHT_CONFIRM_SAMPLES)
+  {
+    line_follow.straight_trim_rpm = LineFollow_Approach(
+      line_follow.straight_trim_rpm,
+      LINE_FOLLOW_STRAIGHT_TRIM_TARGET_RPM,
+      LINE_FOLLOW_STRAIGHT_TRIM_RAMP_RPM);
+  }
+  else
+  {
+    line_follow.straight_trim_rpm = LineFollow_Approach(
+      line_follow.straight_trim_rpm,
+      0.0f,
+      LINE_FOLLOW_STRAIGHT_TRIM_RELEASE_RPM);
+  }
+}
+
 static uint8_t LineFollow_FeedbackFresh(uint32_t now_ms)
 {
   uint8_t motor;
@@ -543,6 +611,7 @@ static void LineFollow_StartRun(uint32_t now_ms, int16_t initial_error)
   line_follow.last_control_error = initial_error;
   line_follow.last_nonzero_error = (initial_error != 0) ? initial_error : 0;
   line_follow.last_turn_rpm = 0.0f;
+  LineFollow_ResetStraightTrim();
   LineFollow_ResetPid(&Motor_pid[0]);
   LineFollow_ResetPid(&Motor_pid[1]);
 }
@@ -551,6 +620,7 @@ static void LineFollow_StartSearch(uint32_t now_ms)
 {
   (void)now_ms;
   line_follow.state = LINE_FOLLOW_SEARCH;
+  LineFollow_ResetStraightTrim();
 }
 
 static uint8_t LineFollow_SendSpeedCommand(int16_t right_output_rpm, int16_t left_output_rpm)
@@ -596,6 +666,10 @@ static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
                                        -LINE_FOLLOW_MAX_TURN_RPM,
                                        LINE_FOLLOW_MAX_TURN_RPM);
   }
+  LineFollow_UpdateStraightTrim(target_turn_rpm);
+  target_turn_rpm = LineFollow_Clamp(target_turn_rpm + line_follow.straight_trim_rpm,
+                                     -LINE_FOLLOW_MAX_TURN_RPM,
+                                     LINE_FOLLOW_MAX_TURN_RPM);
   turn_rpm = LineFollow_ApplyTurnSlew(target_turn_rpm);
   turn_rpm = LineFollow_Clamp(turn_rpm,
                                LINE_FOLLOW_RIGHT_BIAS_RPM - base_output_rpm,
