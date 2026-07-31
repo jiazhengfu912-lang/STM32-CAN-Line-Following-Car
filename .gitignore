@@ -1,0 +1,27 @@
+# Keil MDK build outputs
+*.axf
+*.hex
+*.o
+*.d
+*.crf
+*.dep
+*.lnp
+*.map
+*.htm
+*.lst
+*.build_log.htm
+
+# Keil per-user workspace and debug configuration
+*.uvguix.*
+*.uvoptx
+DebugConfig/
+Sanmotai0917/MDK-ARM/pid2308v1/
+Sanmotai0917/PWM_Fixed_Test/Objects/
+Sanmotai0917/PWM_Fixed_Test/Listings/
+
+# J-Link local logs and settings
+JLinkLog.txt
+JLinkSettings.ini
+
+# CubeMX generated backup files
+*.bak
