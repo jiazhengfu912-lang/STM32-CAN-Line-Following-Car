@@ -143,6 +143,7 @@ void rep(void);
 #define MOTOR_SPEED_PID_KD                         0.02f
 #define LINE_FOLLOW_BASE_OUTPUT_RPM               36
 #define LINE_FOLLOW_RIGHT_BIAS_RPM                 6
+#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3
 #define LINE_FOLLOW_LOST_OUTPUT_RPM               12
 #define LINE_FOLLOW_KP_RPM_PER_ERROR              3
 #define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1
@@ -414,6 +415,12 @@ static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
   target_turn_rpm = LineFollow_Clamp((line_error * LINE_FOLLOW_KP_RPM_PER_ERROR) + d_turn_rpm,
                                      -LINE_FOLLOW_MAX_TURN_RPM,
                                      LINE_FOLLOW_MAX_TURN_RPM);
+  if (target_turn_rpm > 0)
+  {
+    target_turn_rpm = LineFollow_Clamp(target_turn_rpm + LINE_FOLLOW_RIGHT_TURN_BOOST_RPM,
+                                       -LINE_FOLLOW_MAX_TURN_RPM,
+                                       LINE_FOLLOW_MAX_TURN_RPM);
+  }
   turn_rpm = LineFollow_ApplyTurnSlew(target_turn_rpm);
   line_follow.last_control_error = line_error;
 
