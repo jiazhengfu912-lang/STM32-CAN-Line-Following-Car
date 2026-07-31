@@ -140,6 +140,15 @@ void rep(void);
 #define LINE_FOLLOW_START_DELAY_MS                3000U
 #define LINE_FOLLOW_FEEDBACK_TIMEOUT_MS           100U
 #define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U
+#define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U
+#define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U
+#define LINE_FOLLOW_A_TO_B_DISTANCE_MM            1500U
+#define LINE_FOLLOW_STOP_APPROACH_DISTANCE_MM      250U
+#define LINE_FOLLOW_STOP_MIN_DISTANCE_MM            50U
+#define LINE_FOLLOW_STOP_MIN_OUTPUT_RPM             12
+#define LINE_FOLLOW_STOP_SPEED_RPM                  90
+#define LINE_FOLLOW_STOP_SETTLE_TIME_MS            100U
+#define LINE_FOLLOW_STOP_TIMEOUT_MS               1500U
 #define MOTOR_SPEED_PID_KD                         0.02f
 #define LINE_FOLLOW_BASE_OUTPUT_RPM               36
 #define LINE_FOLLOW_RIGHT_BIAS_RPM                 6
@@ -162,6 +171,8 @@ typedef enum
   LINE_FOLLOW_WAIT_LINE,
   LINE_FOLLOW_RUN,
   LINE_FOLLOW_SEARCH,
+  LINE_FOLLOW_STOP_B,
+  LINE_FOLLOW_DONE,
   LINE_FOLLOW_FAULT
 } LineFollowState;
 
@@ -171,6 +182,10 @@ typedef struct
   uint32_t state_start_ms;
   int32_t encoder_count[2];
   int32_t start_count[2];
+  uint32_t target_encoder_count;
+  uint32_t stop_approach_encoder_count;
+  uint32_t stop_minimum_encoder_count;
+  uint32_t stop_settle_start_ms;
   uint16_t last_angle[2];
   int16_t last_error;
   int16_t last_control_error;
@@ -367,10 +382,97 @@ static void LineFollow_ResetPid(PID_TypeDef *pid)
   pid->last_output = 0.0f;
 }
 
+static uint32_t LineFollow_DistanceMmToEncoderCounts(uint32_t distance_mm)
+{
+  uint64_t numerator;
+
+  numerator = (uint64_t)distance_mm * 1000U *
+              LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV * M2006_GEAR_RATIO;
+  return (uint32_t)((numerator + (LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM / 2U)) /
+                    LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM);
+}
+
+static uint32_t LineFollow_GetTravelEncoderCount(void)
+{
+  int32_t right_delta = line_follow.encoder_count[0] - line_follow.start_count[0];
+  int32_t left_delta = line_follow.encoder_count[1] - line_follow.start_count[1];
+  uint32_t right_count = (right_delta < 0) ? (uint32_t)(-right_delta) : (uint32_t)right_delta;
+  uint32_t left_count = (left_delta < 0) ? (uint32_t)(-left_delta) : (uint32_t)left_delta;
+
+  return (right_count + left_count) / 2U;
+}
+
+static uint8_t LineFollow_HasReachedDestination(void)
+{
+  return ((line_follow.target_encoder_count != 0U) &&
+          (LineFollow_GetTravelEncoderCount() >= line_follow.target_encoder_count)) ? 1U : 0U;
+}
+
+static int16_t LineFollow_GetApproachOutputRpm(void)
+{
+  uint32_t travel_count = LineFollow_GetTravelEncoderCount();
+  uint32_t remaining_count;
+  uint32_t approach_span;
+
+  if (travel_count >= line_follow.target_encoder_count)
+  {
+    return LINE_FOLLOW_STOP_MIN_OUTPUT_RPM;
+  }
+
+  remaining_count = line_follow.target_encoder_count - travel_count;
+  if (remaining_count >= line_follow.stop_approach_encoder_count)
+  {
+    return LINE_FOLLOW_BASE_OUTPUT_RPM;
+  }
+  if (remaining_count <= line_follow.stop_minimum_encoder_count)
+  {
+    return LINE_FOLLOW_STOP_MIN_OUTPUT_RPM;
+  }
+
+  approach_span = line_follow.stop_approach_encoder_count -
+                  line_follow.stop_minimum_encoder_count;
+  return (int16_t)(LINE_FOLLOW_STOP_MIN_OUTPUT_RPM +
+                   (((LINE_FOLLOW_BASE_OUTPUT_RPM - LINE_FOLLOW_STOP_MIN_OUTPUT_RPM) *
+                     (int32_t)(remaining_count - line_follow.stop_minimum_encoder_count)) /
+                    (int32_t)approach_span));
+}
+
+static uint8_t LineFollow_MotorsStopped(void)
+{
+  uint8_t motor;
+
+  for (motor = 0U; motor < 2U; motor++)
+  {
+    if ((motor_feedback[motor].speed_rpm > LINE_FOLLOW_STOP_SPEED_RPM) ||
+        (motor_feedback[motor].speed_rpm < -LINE_FOLLOW_STOP_SPEED_RPM))
+    {
+      return 0U;
+    }
+  }
+
+  return 1U;
+}
+
+static void LineFollow_StartStopB(uint32_t now_ms)
+{
+  line_follow.state = LINE_FOLLOW_STOP_B;
+  line_follow.state_start_ms = now_ms;
+  line_follow.stop_settle_start_ms = 0U;
+  LineFollow_ResetPid(&Motor_pid[0]);
+  LineFollow_ResetPid(&Motor_pid[1]);
+}
+
 static void LineFollow_StartRun(uint32_t now_ms, int16_t initial_error)
 {
   line_follow.start_count[0] = line_follow.encoder_count[0];
   line_follow.start_count[1] = line_follow.encoder_count[1];
+  line_follow.target_encoder_count =
+    LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_A_TO_B_DISTANCE_MM);
+  line_follow.stop_approach_encoder_count =
+    LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_STOP_APPROACH_DISTANCE_MM);
+  line_follow.stop_minimum_encoder_count =
+    LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_STOP_MIN_DISTANCE_MM);
+  line_follow.stop_settle_start_ms = 0U;
   line_follow.state = LINE_FOLLOW_RUN;
   line_follow.state_start_ms = now_ms;
   line_follow.last_error = initial_error;
@@ -403,11 +505,13 @@ static uint8_t LineFollow_SendSpeedCommand(int16_t right_output_rpm, int16_t lef
 
 static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
 {
+  int16_t base_output_rpm;
   int16_t error_delta;
   int16_t d_turn_rpm;
   int16_t target_turn_rpm;
   int16_t turn_rpm;
 
+  base_output_rpm = LineFollow_GetApproachOutputRpm();
   error_delta = line_error - line_follow.last_control_error;
   d_turn_rpm = LineFollow_Clamp(error_delta * LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA,
                                  -LINE_FOLLOW_MAX_D_TURN_RPM,
@@ -422,10 +526,14 @@ static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
                                        LINE_FOLLOW_MAX_TURN_RPM);
   }
   turn_rpm = LineFollow_ApplyTurnSlew(target_turn_rpm);
+  turn_rpm = LineFollow_Clamp(turn_rpm,
+                               LINE_FOLLOW_RIGHT_BIAS_RPM - base_output_rpm,
+                               base_output_rpm + LINE_FOLLOW_RIGHT_BIAS_RPM);
+  line_follow.last_turn_rpm = turn_rpm;
   line_follow.last_control_error = line_error;
 
-  return LineFollow_SendSpeedCommand(LINE_FOLLOW_BASE_OUTPUT_RPM + LINE_FOLLOW_RIGHT_BIAS_RPM - turn_rpm,
-                                     LINE_FOLLOW_BASE_OUTPUT_RPM - LINE_FOLLOW_RIGHT_BIAS_RPM + turn_rpm);
+  return LineFollow_SendSpeedCommand(base_output_rpm + LINE_FOLLOW_RIGHT_BIAS_RPM - turn_rpm,
+                                     base_output_rpm - LINE_FOLLOW_RIGHT_BIAS_RPM + turn_rpm);
 }
 
 static uint8_t LineFollow_SendSearchCommand(void)
@@ -540,6 +648,15 @@ static void LineFollow_Control(void)
         line_follow.state = LINE_FOLLOW_FAULT;
         break;
       }
+      if (LineFollow_HasReachedDestination() != 0U)
+      {
+        LineFollow_StartStopB(now_ms);
+        if (LineFollow_SendSpeedCommand(0, 0) != 0U)
+        {
+          line_follow.state = LINE_FOLLOW_FAULT;
+        }
+        break;
+      }
       line_count = LineFollow_ComputeError(line_mask, &line_error);
       if ((line_count != 0U) &&
           (LineFollow_ErrorWithinJumpLimit(line_error, line_follow.last_error) != 0U))
@@ -571,6 +688,15 @@ static void LineFollow_Control(void)
         line_follow.state = LINE_FOLLOW_FAULT;
         break;
       }
+      if (LineFollow_HasReachedDestination() != 0U)
+      {
+        LineFollow_StartStopB(now_ms);
+        if (LineFollow_SendSpeedCommand(0, 0) != 0U)
+        {
+          line_follow.state = LINE_FOLLOW_FAULT;
+        }
+        break;
+      }
 
       line_count = LineFollow_ComputeError(line_mask, &line_error);
       if ((line_count != 0U) &&
@@ -587,6 +713,37 @@ static void LineFollow_Control(void)
       {
         line_follow.state = LINE_FOLLOW_FAULT;
       }
+      break;
+
+    case LINE_FOLLOW_STOP_B:
+      if (LineFollow_SendSpeedCommand(0, 0) != 0U)
+      {
+        line_follow.state = LINE_FOLLOW_FAULT;
+        break;
+      }
+      if (LineFollow_MotorsStopped() != 0U)
+      {
+        if (line_follow.stop_settle_start_ms == 0U)
+        {
+          line_follow.stop_settle_start_ms = now_ms;
+        }
+        else if ((uint32_t)(now_ms - line_follow.stop_settle_start_ms) >= LINE_FOLLOW_STOP_SETTLE_TIME_MS)
+        {
+          line_follow.state = LINE_FOLLOW_DONE;
+        }
+      }
+      else
+      {
+        line_follow.stop_settle_start_ms = 0U;
+      }
+      if ((uint32_t)(now_ms - line_follow.state_start_ms) >= LINE_FOLLOW_STOP_TIMEOUT_MS)
+      {
+        line_follow.state = LINE_FOLLOW_DONE;
+      }
+      break;
+
+    case LINE_FOLLOW_DONE:
+      Set_moto_current(0, 0, 0, 0);
       break;
 
     case LINE_FOLLOW_FAULT:
