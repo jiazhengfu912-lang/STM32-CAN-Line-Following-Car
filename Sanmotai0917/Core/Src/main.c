@@ -158,15 +158,15 @@ void rep(void);
 #define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* 针对当前车架的恒定向右修正量。 */
 #define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3    /* 右转时额外增加的修正量。 */
 #define LINE_FOLLOW_LOST_OUTPUT_RPM               12    /* 丢线搜索时的行驶速度。 */
-#define LINE_FOLLOW_KP_RPM_PER_ERROR              3     /* 增大可加强横向误差修正。 */
-#define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1     /* 增大可加强误差突变时的响应。 */
-#define LINE_FOLLOW_MAX_D_TURN_RPM                4     /* D 项转向修正的最大值。 */
-#define LINE_FOLLOW_MAX_TURN_RPM                  18    /* 总转向修正的最大值。 */
+#define LINE_FOLLOW_KP_RPM_PER_ERROR              3.0f  /* 增大可加强横向误差修正，支持小数。 */
+#define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1.0f  /* 增大可加强误差突变时的响应，支持小数。 */
+#define LINE_FOLLOW_MAX_D_TURN_RPM                4.0f  /* D 项转向修正的最大值，支持小数。 */
+#define LINE_FOLLOW_MAX_TURN_RPM                  18.0f /* 总转向修正的最大值，支持小数。 */
 #define LINE_FOLLOW_LOST_TURN_RPM                 8     /* 丢线搜索时的转向量。 */
 #define LINE_FOLLOW_SENSOR_FILTER_SAMPLES         3U    /* 多数滤波使用的连续采样帧数。 */
 #define LINE_FOLLOW_START_VALID_SAMPLES            3U    /* 在 A 点允许起步前要求的有效黑线帧数。 */
 #define LINE_FOLLOW_ERROR_JUMP_LIMIT              3     /* 超过该位置跳变的传感器结果会被拒绝。 */
-#define LINE_FOLLOW_TURN_SLEW_RPM                 3     /* 每 10 ms 允许的最大转向变化量。 */
+#define LINE_FOLLOW_TURN_SLEW_RPM                 3.0f  /* 每 10 ms 允许的最大转向变化量，支持小数。 */
 
 /* 0x201、0x202 电机速度 PID 调参区，数值为 PID 内部单位。 */
 #define MOTOR_SPEED_PID_MAX_OUTPUT              4500U  /* 电流命令输出限幅。 */
@@ -204,7 +204,7 @@ typedef struct
   int16_t last_error;
   int16_t last_control_error;
   int16_t last_nonzero_error;
-  int16_t last_turn_rpm;
+  float last_turn_rpm;
   uint8_t sensor_history[LINE_FOLLOW_SENSOR_FILTER_SAMPLES];
   uint8_t sensor_history_count;
   uint8_t valid_line_count;
@@ -217,7 +217,7 @@ typedef struct
 static const int8_t line_sensor_weight[8] = {-7, -5, -3, -1, 7, 5, 3, 1};
 static LineFollowControl line_follow = {LINE_FOLLOW_WAIT_FEEDBACK};
 
-static int16_t LineFollow_Clamp(int16_t value, int16_t min_value, int16_t max_value)
+static float LineFollow_Clamp(float value, float min_value, float max_value)
 {
   if (value < min_value)
   {
@@ -312,7 +312,7 @@ static void LineFollow_RecordError(int16_t error)
   }
 }
 
-static int16_t LineFollow_ApplyTurnSlew(int16_t target_turn_rpm)
+static float LineFollow_ApplyTurnSlew(float target_turn_rpm)
 {
   if (target_turn_rpm > (line_follow.last_turn_rpm + LINE_FOLLOW_TURN_SLEW_RPM))
   {
@@ -493,7 +493,7 @@ static void LineFollow_StartRun(uint32_t now_ms, int16_t initial_error)
   line_follow.last_error = initial_error;
   line_follow.last_control_error = initial_error;
   line_follow.last_nonzero_error = (initial_error != 0) ? initial_error : 0;
-  line_follow.last_turn_rpm = 0;
+  line_follow.last_turn_rpm = 0.0f;
   LineFollow_ResetPid(&Motor_pid[0]);
   LineFollow_ResetPid(&Motor_pid[1]);
 }
@@ -518,23 +518,30 @@ static uint8_t LineFollow_SendSpeedCommand(int16_t right_output_rpm, int16_t lef
                           0);
 }
 
+static int16_t LineFollow_RoundOutputRpm(float output_rpm)
+{
+  return (output_rpm >= 0.0f) ?
+         (int16_t)(output_rpm + 0.5f) :
+         (int16_t)(output_rpm - 0.5f);
+}
+
 static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
 {
-  int16_t base_output_rpm;
-  int16_t error_delta;
-  int16_t d_turn_rpm;
-  int16_t target_turn_rpm;
-  int16_t turn_rpm;
+  float base_output_rpm;
+  float error_delta;
+  float d_turn_rpm;
+  float target_turn_rpm;
+  float turn_rpm;
 
-  base_output_rpm = LineFollow_GetApproachOutputRpm();
-  error_delta = line_error - line_follow.last_control_error;
+  base_output_rpm = (float)LineFollow_GetApproachOutputRpm();
+  error_delta = (float)(line_error - line_follow.last_control_error);
   d_turn_rpm = LineFollow_Clamp(error_delta * LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA,
                                  -LINE_FOLLOW_MAX_D_TURN_RPM,
                                  LINE_FOLLOW_MAX_D_TURN_RPM);
   target_turn_rpm = LineFollow_Clamp((line_error * LINE_FOLLOW_KP_RPM_PER_ERROR) + d_turn_rpm,
                                      -LINE_FOLLOW_MAX_TURN_RPM,
                                      LINE_FOLLOW_MAX_TURN_RPM);
-  if (target_turn_rpm > 0)
+  if (target_turn_rpm > 0.0f)
   {
     target_turn_rpm = LineFollow_Clamp(target_turn_rpm + LINE_FOLLOW_RIGHT_TURN_BOOST_RPM,
                                        -LINE_FOLLOW_MAX_TURN_RPM,
@@ -547,18 +554,19 @@ static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
   line_follow.last_turn_rpm = turn_rpm;
   line_follow.last_control_error = line_error;
 
-  return LineFollow_SendSpeedCommand(base_output_rpm + LINE_FOLLOW_RIGHT_BIAS_RPM - turn_rpm,
-                                     base_output_rpm - LINE_FOLLOW_RIGHT_BIAS_RPM + turn_rpm);
+  return LineFollow_SendSpeedCommand(
+    LineFollow_RoundOutputRpm(base_output_rpm + LINE_FOLLOW_RIGHT_BIAS_RPM - turn_rpm),
+    LineFollow_RoundOutputRpm(base_output_rpm - LINE_FOLLOW_RIGHT_BIAS_RPM + turn_rpm));
 }
 
 static uint8_t LineFollow_SendSearchCommand(void)
 {
-  int16_t target_turn_rpm;
-  int16_t turn_rpm;
+  float target_turn_rpm;
+  float turn_rpm;
 
   if (line_follow.last_nonzero_error == 0)
   {
-    line_follow.last_turn_rpm = 0;
+    line_follow.last_turn_rpm = 0.0f;
     return LineFollow_SendSpeedCommand(0, 0);
   }
 
@@ -566,8 +574,9 @@ static uint8_t LineFollow_SendSearchCommand(void)
                     LINE_FOLLOW_LOST_TURN_RPM : -LINE_FOLLOW_LOST_TURN_RPM;
   turn_rpm = LineFollow_ApplyTurnSlew(target_turn_rpm);
 
-  return LineFollow_SendSpeedCommand(LINE_FOLLOW_LOST_OUTPUT_RPM - turn_rpm,
-                                     LINE_FOLLOW_LOST_OUTPUT_RPM + turn_rpm);
+  return LineFollow_SendSpeedCommand(
+    LineFollow_RoundOutputRpm(LINE_FOLLOW_LOST_OUTPUT_RPM - turn_rpm),
+    LineFollow_RoundOutputRpm(LINE_FOLLOW_LOST_OUTPUT_RPM + turn_rpm));
 }
 
 static void LineFollow_Control(void)
