@@ -138,10 +138,12 @@ void rep(void);
 
 /* 硬件标定参数：仅在更换电机或车轮后修改。 */
 #define M2006_GEAR_RATIO                         36    /* M2006 电机减速比。 */
+#define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U /* 电机轴每圈的反馈编码器计数。 */
+#define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U /* 直径 65 mm 车轮的周长，单位：微米。 */
 
-/* A 点标记判定：任一侧 4 路中达到规定数量的黑线检测才视为起终点标记。 */
-#define LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS       3U /* 单侧至少检测到的黑线传感器数量。 */
-#define LINE_FOLLOW_A_MARKER_CLEAR_SAMPLES           3U /* 起步后连续非标记帧数，达到后允许判定返回 A 点。 */
+/* A 点终点判定：先经过 C、D，再用 A 点 40 cm 宽横线确认。 */
+#define LINE_FOLLOW_A_MARKER_ARM_DISTANCE_MM      6200U /* 达到该平均行程前忽略所有终点标记。 */
+#define LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS       3U /* A 点横线要求左右两侧各至少检测到该数量。 */
 #define LINE_FOLLOW_A_MARKER_VALID_SAMPLES           3U /* 返回 A 点时连续标记帧数，达到后停车。 */
 
 /* A 点停车制动参数。 */
@@ -193,7 +195,11 @@ typedef struct
 {
   LineFollowState state;
   uint32_t state_start_ms;
+  int32_t encoder_count[2];
+  int32_t start_count[2];
+  uint32_t a_marker_arm_encoder_count;
   uint32_t stop_settle_start_ms;
+  uint16_t last_angle[2];
   int16_t last_error;
   int16_t last_control_error;
   int16_t last_nonzero_error;
@@ -201,9 +207,8 @@ typedef struct
   uint8_t sensor_history[LINE_FOLLOW_SENSOR_FILTER_SAMPLES];
   uint8_t sensor_history_count;
   uint8_t valid_line_count;
-  uint8_t a_marker_armed;
-  uint8_t a_marker_clear_count;
   uint8_t a_marker_valid_count;
+  uint8_t encoder_ready;
 } LineFollowControl;
 
 /* 传感器映射标定：仅在修改模块接线或安装位置后调整。 */
@@ -305,32 +310,41 @@ static uint8_t LineFollow_IsAMarker(uint8_t line_mask)
   uint8_t left_count = LineFollow_CountSideSensors(line_mask & 0x0FU);
   uint8_t right_count = LineFollow_CountSideSensors((line_mask >> 4U) & 0x0FU);
 
-  return ((left_count >= LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS) ||
+  return ((left_count >= LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS) &&
           (right_count >= LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS)) ? 1U : 0U;
+}
+
+static uint32_t LineFollow_DistanceMmToEncoderCounts(uint32_t distance_mm)
+{
+  uint64_t numerator;
+
+  numerator = (uint64_t)distance_mm * 1000U *
+              LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV * M2006_GEAR_RATIO;
+  return (uint32_t)((numerator + (LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM / 2U)) /
+                    LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM);
+}
+
+static uint32_t LineFollow_GetTravelEncoderCount(void)
+{
+  int32_t right_delta = line_follow.encoder_count[0] - line_follow.start_count[0];
+  int32_t left_delta = line_follow.encoder_count[1] - line_follow.start_count[1];
+  uint32_t right_count = (right_delta < 0) ? (uint32_t)(-right_delta) : (uint32_t)right_delta;
+  uint32_t left_count = (left_delta < 0) ? (uint32_t)(-left_delta) : (uint32_t)left_delta;
+
+  return (right_count + left_count) / 2U;
 }
 
 static uint8_t LineFollow_HasReturnedToA(uint8_t line_mask)
 {
-  if (LineFollow_IsAMarker(line_mask) == 0U)
+  if (LineFollow_GetTravelEncoderCount() < line_follow.a_marker_arm_encoder_count)
   {
     line_follow.a_marker_valid_count = 0U;
-    if (line_follow.a_marker_armed == 0U)
-    {
-      if (line_follow.a_marker_clear_count < LINE_FOLLOW_A_MARKER_CLEAR_SAMPLES)
-      {
-        line_follow.a_marker_clear_count++;
-      }
-      if (line_follow.a_marker_clear_count >= LINE_FOLLOW_A_MARKER_CLEAR_SAMPLES)
-      {
-        line_follow.a_marker_armed = 1U;
-      }
-    }
     return 0U;
   }
 
-  if (line_follow.a_marker_armed == 0U)
+  if (LineFollow_IsAMarker(line_mask) == 0U)
   {
-    line_follow.a_marker_clear_count = 0U;
+    line_follow.a_marker_valid_count = 0U;
     return 0U;
   }
 
@@ -396,6 +410,44 @@ static uint8_t LineFollow_FeedbackFresh(uint32_t now_ms)
   return 1U;
 }
 
+static void LineFollow_UpdateEncoder(void)
+{
+  uint8_t motor;
+
+  if (line_follow.encoder_ready == 0U)
+  {
+    if ((motor_feedback[0].valid == 0U) || (motor_feedback[1].valid == 0U))
+    {
+      return;
+    }
+
+    for (motor = 0U; motor < 2U; motor++)
+    {
+      line_follow.last_angle[motor] = motor_feedback[motor].angle;
+      line_follow.encoder_count[motor] = 0;
+    }
+    line_follow.encoder_ready = 1U;
+    return;
+  }
+
+  for (motor = 0U; motor < 2U; motor++)
+  {
+    int16_t delta = (int16_t)(motor_feedback[motor].angle - line_follow.last_angle[motor]);
+
+    if (delta > 4096)
+    {
+      delta -= 8192;
+    }
+    else if (delta < -4096)
+    {
+      delta += 8192;
+    }
+
+    line_follow.encoder_count[motor] += delta;
+    line_follow.last_angle[motor] = motor_feedback[motor].angle;
+  }
+}
+
 static void LineFollow_ResetPid(PID_TypeDef *pid)
 {
   pid->target = 0.0f;
@@ -436,9 +488,11 @@ static void LineFollow_StartStopA(uint32_t now_ms)
 
 static void LineFollow_StartRun(uint32_t now_ms, int16_t initial_error)
 {
+  line_follow.start_count[0] = line_follow.encoder_count[0];
+  line_follow.start_count[1] = line_follow.encoder_count[1];
+  line_follow.a_marker_arm_encoder_count =
+    LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_A_MARKER_ARM_DISTANCE_MM);
   line_follow.stop_settle_start_ms = 0U;
-  line_follow.a_marker_armed = 0U;
-  line_follow.a_marker_clear_count = 0U;
   line_follow.a_marker_valid_count = 0U;
   line_follow.state = LINE_FOLLOW_RUN;
   line_follow.state_start_ms = now_ms;
@@ -538,6 +592,7 @@ static void LineFollow_Control(void)
   uint8_t line_mask;
   uint8_t line_count;
 
+  LineFollow_UpdateEncoder();
   line_mask = LineFollow_GetLineMask();
 
   switch (line_follow.state)
