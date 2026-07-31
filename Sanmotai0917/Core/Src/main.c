@@ -141,10 +141,11 @@ void rep(void);
 #define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U /* 电机轴每圈的反馈编码器计数。 */
 #define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U /* 直径 65 mm 车轮的周长，单位：微米。 */
 
-/* A 点终点判定：先经过 C、D，再用 A 点 40 cm 宽横线确认。 */
+/* A 点终点判定：先经过 C、D，再按右侧先扫线、左侧后扫线的顺序确认。 */
 #define LINE_FOLLOW_A_MARKER_ARM_DISTANCE_MM      6200U /* 达到该平均行程前忽略所有终点标记。 */
-#define LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS       3U /* A 点横线要求左右两侧各至少检测到该数量。 */
-#define LINE_FOLLOW_A_MARKER_VALID_SAMPLES           3U /* 返回 A 点时连续标记帧数，达到后停车。 */
+#define LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS       3U /* 单侧横线标记至少需要检测到的黑线传感器数量。 */
+#define LINE_FOLLOW_A_MARKER_VALID_SAMPLES           3U /* 右侧和左侧标记各自需要连续满足的控制周期数。 */
+#define LINE_FOLLOW_A_MARKER_SEQUENCE_MAX_DISTANCE_MM 300U /* 右侧标记到左侧标记允许的最大平均行程，单位：mm。 */
 
 /* A 点停车制动参数。 */
 #define LINE_FOLLOW_STOP_SPEED_RPM                  90  /* 判定电机停止的反馈转速阈值。 */
@@ -157,7 +158,7 @@ void rep(void);
 #define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U /* 连续运行的最大时间保护。 */
 #define LINE_FOLLOW_BASE_OUTPUT_RPM               36    /* 直线循迹基础速度。 */
 #define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* 针对当前车架的恒定向右修正量。 */
-#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3    /* 右转时额外增加的修正量。 */
+#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           4    /* 右转时额外增加的修正量。 */
 #define LINE_FOLLOW_LOST_OUTPUT_RPM               12    /* 丢线搜索时的行驶速度。 */
 #define LINE_FOLLOW_KP_RPM_PER_ERROR              3.0f  /* 增大可加强横向误差修正，支持小数。 */
 #define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1.2f  /* 增大可加强误差突变时的响应，支持小数。 */
@@ -198,6 +199,8 @@ typedef struct
   int32_t encoder_count[2];
   int32_t start_count[2];
   uint32_t a_marker_arm_encoder_count;
+  uint32_t a_marker_sequence_max_encoder_count;
+  uint32_t a_marker_right_encoder_count;
   uint32_t stop_settle_start_ms;
   uint16_t last_angle[2];
   int16_t last_error;
@@ -207,7 +210,9 @@ typedef struct
   uint8_t sensor_history[LINE_FOLLOW_SENSOR_FILTER_SAMPLES];
   uint8_t sensor_history_count;
   uint8_t valid_line_count;
-  uint8_t a_marker_valid_count;
+  uint8_t a_marker_right_valid_count;
+  uint8_t a_marker_left_valid_count;
+  uint8_t a_marker_right_seen;
   uint8_t encoder_ready;
 } LineFollowControl;
 
@@ -305,13 +310,11 @@ static uint8_t LineFollow_CountSideSensors(uint8_t side_mask)
   return count;
 }
 
-static uint8_t LineFollow_IsAMarker(uint8_t line_mask)
+static void LineFollow_ResetAMarkerSequence(void)
 {
-  uint8_t left_count = LineFollow_CountSideSensors(line_mask & 0x0FU);
-  uint8_t right_count = LineFollow_CountSideSensors((line_mask >> 4U) & 0x0FU);
-
-  return ((left_count >= LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS) &&
-          (right_count >= LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS)) ? 1U : 0U;
+  line_follow.a_marker_right_valid_count = 0U;
+  line_follow.a_marker_left_valid_count = 0U;
+  line_follow.a_marker_right_seen = 0U;
 }
 
 static uint32_t LineFollow_DistanceMmToEncoderCounts(uint32_t distance_mm)
@@ -336,24 +339,62 @@ static uint32_t LineFollow_GetTravelEncoderCount(void)
 
 static uint8_t LineFollow_HasReturnedToA(uint8_t line_mask)
 {
-  if (LineFollow_GetTravelEncoderCount() < line_follow.a_marker_arm_encoder_count)
+  uint32_t travel_encoder_count;
+  uint8_t left_count;
+  uint8_t right_count;
+
+  travel_encoder_count = LineFollow_GetTravelEncoderCount();
+  if (travel_encoder_count < line_follow.a_marker_arm_encoder_count)
   {
-    line_follow.a_marker_valid_count = 0U;
+    LineFollow_ResetAMarkerSequence();
     return 0U;
   }
 
-  if (LineFollow_IsAMarker(line_mask) == 0U)
+  left_count = LineFollow_CountSideSensors(line_mask & 0x0FU);
+  right_count = LineFollow_CountSideSensors((line_mask >> 4U) & 0x0FU);
+
+  if (line_follow.a_marker_right_seen == 0U)
   {
-    line_follow.a_marker_valid_count = 0U;
+    if (right_count < LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS)
+    {
+      line_follow.a_marker_right_valid_count = 0U;
+      return 0U;
+    }
+
+    if (line_follow.a_marker_right_valid_count < LINE_FOLLOW_A_MARKER_VALID_SAMPLES)
+    {
+      line_follow.a_marker_right_valid_count++;
+    }
+
+    if (line_follow.a_marker_right_valid_count >= LINE_FOLLOW_A_MARKER_VALID_SAMPLES)
+    {
+      line_follow.a_marker_right_seen = 1U;
+      line_follow.a_marker_right_encoder_count = travel_encoder_count;
+      line_follow.a_marker_left_valid_count = 0U;
+    }
+
     return 0U;
   }
 
-  if (line_follow.a_marker_valid_count < LINE_FOLLOW_A_MARKER_VALID_SAMPLES)
+  if ((travel_encoder_count - line_follow.a_marker_right_encoder_count) >
+      line_follow.a_marker_sequence_max_encoder_count)
   {
-    line_follow.a_marker_valid_count++;
+    LineFollow_ResetAMarkerSequence();
+    return 0U;
   }
 
-  return (line_follow.a_marker_valid_count >= LINE_FOLLOW_A_MARKER_VALID_SAMPLES) ? 1U : 0U;
+  if (left_count < LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS)
+  {
+    line_follow.a_marker_left_valid_count = 0U;
+    return 0U;
+  }
+
+  if (line_follow.a_marker_left_valid_count < LINE_FOLLOW_A_MARKER_VALID_SAMPLES)
+  {
+    line_follow.a_marker_left_valid_count++;
+  }
+
+  return (line_follow.a_marker_left_valid_count >= LINE_FOLLOW_A_MARKER_VALID_SAMPLES) ? 1U : 0U;
 }
 
 static uint8_t LineFollow_ErrorWithinJumpLimit(int16_t error, int16_t reference_error)
@@ -492,8 +533,10 @@ static void LineFollow_StartRun(uint32_t now_ms, int16_t initial_error)
   line_follow.start_count[1] = line_follow.encoder_count[1];
   line_follow.a_marker_arm_encoder_count =
     LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_A_MARKER_ARM_DISTANCE_MM);
+  line_follow.a_marker_sequence_max_encoder_count =
+    LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_A_MARKER_SEQUENCE_MAX_DISTANCE_MM);
   line_follow.stop_settle_start_ms = 0U;
-  line_follow.a_marker_valid_count = 0U;
+  LineFollow_ResetAMarkerSequence();
   line_follow.state = LINE_FOLLOW_RUN;
   line_follow.state_start_ms = now_ms;
   line_follow.last_error = initial_error;
