@@ -140,15 +140,18 @@ void rep(void);
 #define LINE_FOLLOW_START_DELAY_MS                3000U
 #define LINE_FOLLOW_FEEDBACK_TIMEOUT_MS           100U
 #define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U
-#define LINE_FOLLOW_BASE_OUTPUT_RPM               30
+#define MOTOR_SPEED_PID_KD                         0.02f
+#define LINE_FOLLOW_BASE_OUTPUT_RPM               36
 #define LINE_FOLLOW_LOST_OUTPUT_RPM               12
-#define LINE_FOLLOW_KP_RPM_PER_ERROR              4
-#define LINE_FOLLOW_MAX_TURN_RPM                  22
+#define LINE_FOLLOW_KP_RPM_PER_ERROR              3
+#define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1
+#define LINE_FOLLOW_MAX_D_TURN_RPM                4
+#define LINE_FOLLOW_MAX_TURN_RPM                  18
 #define LINE_FOLLOW_LOST_TURN_RPM                 8
 #define LINE_FOLLOW_SENSOR_FILTER_SAMPLES         3U
 #define LINE_FOLLOW_START_VALID_SAMPLES            3U
 #define LINE_FOLLOW_ERROR_JUMP_LIMIT              3
-#define LINE_FOLLOW_TURN_SLEW_RPM                 4
+#define LINE_FOLLOW_TURN_SLEW_RPM                 3
 
 typedef enum
 {
@@ -168,6 +171,7 @@ typedef struct
   int32_t start_count[2];
   uint16_t last_angle[2];
   int16_t last_error;
+  int16_t last_control_error;
   int16_t last_nonzero_error;
   int16_t last_turn_rpm;
   uint8_t sensor_history[LINE_FOLLOW_SENSOR_FILTER_SAMPLES];
@@ -368,6 +372,7 @@ static void LineFollow_StartRun(uint32_t now_ms, int16_t initial_error)
   line_follow.state = LINE_FOLLOW_RUN;
   line_follow.state_start_ms = now_ms;
   line_follow.last_error = initial_error;
+  line_follow.last_control_error = initial_error;
   line_follow.last_nonzero_error = (initial_error != 0) ? initial_error : 0;
   line_follow.last_turn_rpm = 0;
   LineFollow_ResetPid(&Motor_pid[0]);
@@ -396,13 +401,20 @@ static uint8_t LineFollow_SendSpeedCommand(int16_t right_output_rpm, int16_t lef
 
 static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
 {
+  int16_t error_delta;
+  int16_t d_turn_rpm;
   int16_t target_turn_rpm;
   int16_t turn_rpm;
 
-  target_turn_rpm = LineFollow_Clamp(line_error * LINE_FOLLOW_KP_RPM_PER_ERROR,
+  error_delta = line_error - line_follow.last_control_error;
+  d_turn_rpm = LineFollow_Clamp(error_delta * LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA,
+                                 -LINE_FOLLOW_MAX_D_TURN_RPM,
+                                 LINE_FOLLOW_MAX_D_TURN_RPM);
+  target_turn_rpm = LineFollow_Clamp((line_error * LINE_FOLLOW_KP_RPM_PER_ERROR) + d_turn_rpm,
                                      -LINE_FOLLOW_MAX_TURN_RPM,
                                      LINE_FOLLOW_MAX_TURN_RPM);
   turn_rpm = LineFollow_ApplyTurnSlew(target_turn_rpm);
+  line_follow.last_control_error = line_error;
 
   return LineFollow_SendSpeedCommand(LINE_FOLLOW_BASE_OUTPUT_RPM - turn_rpm,
                                      LINE_FOLLOW_BASE_OUTPUT_RPM + turn_rpm);
@@ -621,6 +633,11 @@ int main(void)
   CanTxBuf[7]=0x01;    
   CAN_Filter_Init();
   Set_moto_current(0, 0, 0, 0);
+
+  for (int i = 0; i < 2; i++)
+  {
+    Motor_pid[i].kd = MOTOR_SPEED_PID_KD;
+  }
 
 #if 0
 
