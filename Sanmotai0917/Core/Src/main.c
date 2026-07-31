@@ -136,33 +136,47 @@ void rep(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-#define M2006_GEAR_RATIO                         36
-#define LINE_FOLLOW_START_DELAY_MS                3000U
-#define LINE_FOLLOW_FEEDBACK_TIMEOUT_MS           100U
-#define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U
-#define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U
-#define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U
-#define LINE_FOLLOW_A_TO_B_DISTANCE_MM            1500U
-#define LINE_FOLLOW_STOP_APPROACH_DISTANCE_MM      250U
-#define LINE_FOLLOW_STOP_MIN_DISTANCE_MM            50U
-#define LINE_FOLLOW_STOP_MIN_OUTPUT_RPM             12
-#define LINE_FOLLOW_STOP_SPEED_RPM                  90
-#define LINE_FOLLOW_STOP_SETTLE_TIME_MS            100U
-#define LINE_FOLLOW_STOP_TIMEOUT_MS               1500U
-#define MOTOR_SPEED_PID_KD                         0.02f
-#define LINE_FOLLOW_BASE_OUTPUT_RPM               36
-#define LINE_FOLLOW_RIGHT_BIAS_RPM                 6
-#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3
-#define LINE_FOLLOW_LOST_OUTPUT_RPM               12
-#define LINE_FOLLOW_KP_RPM_PER_ERROR              3
-#define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1
-#define LINE_FOLLOW_MAX_D_TURN_RPM                4
-#define LINE_FOLLOW_MAX_TURN_RPM                  18
-#define LINE_FOLLOW_LOST_TURN_RPM                 8
-#define LINE_FOLLOW_SENSOR_FILTER_SAMPLES         3U
-#define LINE_FOLLOW_START_VALID_SAMPLES            3U
-#define LINE_FOLLOW_ERROR_JUMP_LIMIT              3
-#define LINE_FOLLOW_TURN_SLEW_RPM                 3
+/* Hardware calibration. Change only after replacing a motor or wheel. */
+#define M2006_GEAR_RATIO                         36    /* M2006 output reduction ratio. */
+#define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U /* Feedback counts per motor-shaft revolution. */
+#define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U /* 65 mm wheel circumference in micrometres. */
+
+/* A-to-B distance calibration. Adjust A_TO_B_DISTANCE_MM for real stop error. */
+#define LINE_FOLLOW_A_TO_B_DISTANCE_MM            1500U /* A-to-B nominal path length in mm. */
+#define LINE_FOLLOW_STOP_APPROACH_DISTANCE_MM      250U /* Remaining distance where speed reduction begins. */
+#define LINE_FOLLOW_STOP_MIN_DISTANCE_MM            50U /* Remaining distance where minimum speed is held. */
+#define LINE_FOLLOW_STOP_MIN_OUTPUT_RPM             12  /* Minimum wheel output speed near B. */
+#define LINE_FOLLOW_STOP_SPEED_RPM                  90  /* Motor feedback rpm considered stopped. */
+#define LINE_FOLLOW_STOP_SETTLE_TIME_MS            100U /* Required continuous stopped time. */
+#define LINE_FOLLOW_STOP_TIMEOUT_MS               1500U /* Maximum active PID braking duration. */
+
+/* Line-follow tuning. All speed values below are wheel output rpm. */
+#define LINE_FOLLOW_START_DELAY_MS                3000U /* Power-on wait before looking for line. */
+#define LINE_FOLLOW_FEEDBACK_TIMEOUT_MS           100U  /* CAN feedback loss threshold. */
+#define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U /* Maximum continuous run time. */
+#define LINE_FOLLOW_BASE_OUTPUT_RPM               36    /* Straight-line base speed. */
+#define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* Constant right correction for current chassis. */
+#define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3    /* Extra correction during right turns. */
+#define LINE_FOLLOW_LOST_OUTPUT_RPM               12    /* Search speed after line is lost. */
+#define LINE_FOLLOW_KP_RPM_PER_ERROR              3     /* Larger gives stronger line-error correction. */
+#define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1     /* Larger reacts more to error changes. */
+#define LINE_FOLLOW_MAX_D_TURN_RPM                4     /* Limit on the D correction term. */
+#define LINE_FOLLOW_MAX_TURN_RPM                  18    /* Overall steering correction limit. */
+#define LINE_FOLLOW_LOST_TURN_RPM                 8     /* Search steering magnitude. */
+#define LINE_FOLLOW_SENSOR_FILTER_SAMPLES         3U    /* Majority-filter frame count. */
+#define LINE_FOLLOW_START_VALID_SAMPLES            3U    /* Valid line frames required to start at A. */
+#define LINE_FOLLOW_ERROR_JUMP_LIMIT              3     /* Reject larger sensor-position jumps. */
+#define LINE_FOLLOW_TURN_SLEW_RPM                 3     /* Maximum steering change every 10 ms. */
+
+/* Motor speed PID tuning for 0x201 and 0x202. Values are PID internal units. */
+#define MOTOR_SPEED_PID_MAX_OUTPUT              4500U  /* Current command output limit. */
+#define MOTOR_SPEED_PID_INTEGRAL_LIMIT          5000U  /* Integral accumulator limit. */
+#define MOTOR_SPEED_PID_DEADBAND                   1.0f /* Ignore speed error inside this band. */
+#define MOTOR_SPEED_PID_CONTROL_PERIOD             0U   /* Reserved by pid.c; currently not used. */
+#define MOTOR_SPEED_PID_MAX_ERROR                8000  /* Reserved by pid.c; currently not used. */
+#define MOTOR_SPEED_PID_KP                         0.4f /* Proportional speed correction. */
+#define MOTOR_SPEED_PID_KI                         0.03f /* Integral speed correction. */
+#define MOTOR_SPEED_PID_KD                         0.0f /* Differential speed correction; disabled. */
 
 typedef enum
 {
@@ -197,6 +211,7 @@ typedef struct
   uint8_t encoder_ready;
 } LineFollowControl;
 
+/* Sensor mapping calibration: edit only after changing module wiring or placement. */
 /* Raw bits are L01, L02, L03, L04, R01, R02, R03, R04. */
 /* Physical left-to-right order is L01, L02, L03, L04, R04, R03, R02, R01. */
 static const int8_t line_sensor_weight[8] = {-7, -5, -3, -1, 7, 5, 3, 1};
@@ -799,11 +814,6 @@ int main(void)
   CAN_Filter_Init();
   Set_moto_current(0, 0, 0, 0);
 
-  for (int i = 0; i < 2; i++)
-  {
-    Motor_pid[i].kd = MOTOR_SPEED_PID_KD;
-  }
-
 #if 0
 
 HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_2);//����CH1��PWM�����
@@ -825,7 +835,16 @@ HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_2);//����CH1��PWM�����
   for(int i=0; i<2; i++) //g
   {	
     pid_init(&Motor_pid[i]);
-    Motor_pid[i].f_param_init(&Motor_pid[i],PID_Speed,4500,5000,1,0,8000,0,0.4,0.03,0);//ԭ��ֵΪ0.5��0.1��0������Ϊ10 
+    Motor_pid[i].f_param_init(&Motor_pid[i], PID_Speed,
+                              MOTOR_SPEED_PID_MAX_OUTPUT,
+                              MOTOR_SPEED_PID_INTEGRAL_LIMIT,
+                              MOTOR_SPEED_PID_DEADBAND,
+                              MOTOR_SPEED_PID_CONTROL_PERIOD,
+                              MOTOR_SPEED_PID_MAX_ERROR,
+                              0,
+                              MOTOR_SPEED_PID_KP,
+                              MOTOR_SPEED_PID_KI,
+                              MOTOR_SPEED_PID_KD);
   }
 
 
