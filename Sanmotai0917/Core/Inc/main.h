@@ -66,8 +66,8 @@ void Actuator_Speed_Update(void);
 #define LED0_GPIO_Port GPIOB
 #define LORA_M1_Pin GPIO_PIN_5
 #define LORA_M1_GPIO_Port GPIOA
-#define LORA_AUX_Pin GPIO_PIN_0
-#define LORA_AUX_GPIO_Port GPIOB
+#define LORA_AUX_Pin GPIO_PIN_6
+#define LORA_AUX_GPIO_Port GPIOA
 #define TRACK_R_D01_Pin GPIO_PIN_6
 #define TRACK_R_D01_GPIO_Port GPIOB
 #define TRACK_R_D02_Pin GPIO_PIN_7
