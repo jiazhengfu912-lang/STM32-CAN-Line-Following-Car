@@ -182,7 +182,7 @@ void rep(void);
 #define LINE_FOLLOW_STRAIGHT_TURN_WINDOW_RPM      2.0f   /* 实际转向量接近恒定修正量时，判定为直线的允许范围。 */
 #define LINE_FOLLOW_STRAIGHT_CONFIRM_SAMPLES        5U   /* 连续满足直线条件后才开始施加补偿的控制周期数。 */
 #define LINE_FOLLOW_LOST_OUTPUT_RPM               12    /* 丢线搜索时的行驶速度。 */
-#define LINE_FOLLOW_KP_RPM_PER_ERROR              2.5f  /* 增大可加强横向误差修正，支持小数。 */
+#define LINE_FOLLOW_KP_RPM_PER_ERROR              3.0f  /* 增大可加强横向误差修正，支持小数。 */
 #define LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA        1.2f  /* 增大可加强误差突变时的响应，支持小数。 */
 #define LINE_FOLLOW_MAX_D_TURN_RPM                4.0f  /* D 项转向修正的最大值，支持小数。 */
 #define LINE_FOLLOW_MAX_TURN_RPM                  18.0f /* 总转向修正的最大值，支持小数。 */
