@@ -883,12 +883,9 @@ static void LineFollow_Control(void)
       if (LineFollow_FeedbackFresh(now_ms) != 0U)
       {
         LoraProtocol_Arm(now_ms);
-        if ((lora_protocol.start_received != 0U) &&
-            (lora_protocol.start_ack_pending == 0U))
-        {
-          line_follow.state = LINE_FOLLOW_START_DELAY;
-          line_follow.state_start_ms = now_ms;
-        }
+        /* 当前测试由复位启动：CAN 反馈正常后直接进入三秒启动延时，不等待 LoRa 指令。 */
+        line_follow.state = LINE_FOLLOW_START_DELAY;
+        line_follow.state_start_ms = now_ms;
       }
       break;
 
