@@ -164,11 +164,6 @@ void rep(void);
 #define LINE_FOLLOW_A_MARKER_VALID_SAMPLES           3U /* 右侧和左侧标记各自需要连续满足的控制周期数。 */
 #define LINE_FOLLOW_A_MARKER_SEQUENCE_MAX_DISTANCE_MM 300U /* 右侧标记到左侧标记允许的最大平均行程，单位：mm。 */
 
-/* B、C 点分段减速参数：赛道 A 到 B 为 150 cm，B 到 C 为半径 75 cm 的右半圆。 */
-#define LINE_FOLLOW_B_ENTER_DISTANCE_MM           1500U /* A 点起步后达到该平均行程即进入 B-C 半圆减速；实车进入 B 过早则减小，过晚则增大。 */
-#define LINE_FOLLOW_BC_ARC_DISTANCE_MM             2356U /* 从确认 B 起累计该行程后视为离开 C；数值为 PI×750 mm，通常无需调整。 */
-#define LINE_FOLLOW_CURVE_BASE_OUTPUT_RPM            22  /* B-C 半圆循迹基础速度；减小更稳，增大更快。 */
-
 /* A 点停车制动参数。 */
 #define LINE_FOLLOW_STOP_SPEED_RPM                  90  /* 判定电机停止的反馈转速阈值。 */
 #define LINE_FOLLOW_STOP_SETTLE_TIME_MS            100U /* 低于停止阈值后需持续的时间，单位：ms。 */
@@ -228,9 +223,6 @@ typedef struct
   uint32_t a_marker_arm_encoder_count;
   uint32_t a_marker_sequence_max_encoder_count;
   uint32_t a_marker_right_encoder_count;
-  uint32_t b_enter_encoder_count;
-  uint32_t bc_arc_encoder_count;
-  uint32_t b_curve_start_encoder_count;
   uint32_t stop_settle_start_ms;
   uint16_t last_angle[2];
   int16_t last_error;
@@ -245,8 +237,6 @@ typedef struct
   uint8_t a_marker_right_valid_count;
   uint8_t a_marker_left_valid_count;
   uint8_t a_marker_right_seen;
-  uint8_t bc_curve_active;
-  uint8_t bc_curve_finished;
   uint8_t encoder_ready;
 } LineFollowControl;
 
@@ -382,44 +372,6 @@ static uint32_t LineFollow_GetTravelEncoderCount(void)
   uint32_t left_count = (left_delta < 0) ? (uint32_t)(-left_delta) : (uint32_t)left_delta;
 
   return (right_count + left_count) / 2U;
-}
-
-static void LineFollow_UpdateBCSpeedSegment(void)
-{
-  uint32_t travel_encoder_count = LineFollow_GetTravelEncoderCount();
-
-  /* B 点只允许确认一次，避免后续经过其他弯道时重复进入半圆减速。 */
-  if (line_follow.bc_curve_finished != 0U)
-  {
-    return;
-  }
-
-  if (line_follow.bc_curve_active == 0U)
-  {
-    /* 此处是 B 点编码器阈值判断。阈值在启动时由毫米参数自动换算。 */
-    if (travel_encoder_count >= line_follow.b_enter_encoder_count)
-    {
-      line_follow.bc_curve_active = 1U;
-      line_follow.b_curve_start_encoder_count = travel_encoder_count;
-    }
-    return;
-  }
-
-  /* 从 B 点起重新累计半圆弧长，到 C 点后恢复直线基础速度。 */
-  if ((travel_encoder_count >= line_follow.b_curve_start_encoder_count) &&
-      ((travel_encoder_count - line_follow.b_curve_start_encoder_count) >=
-       line_follow.bc_arc_encoder_count))
-  {
-    line_follow.bc_curve_active = 0U;
-    line_follow.bc_curve_finished = 1U;
-  }
-}
-
-static float LineFollow_GetBaseOutputRpm(void)
-{
-  return (line_follow.bc_curve_active != 0U) ?
-         (float)LINE_FOLLOW_CURVE_BASE_OUTPUT_RPM :
-         (float)LINE_FOLLOW_BASE_OUTPUT_RPM;
 }
 
 static uint8_t LineFollow_HasReturnedToA(uint8_t line_mask)
@@ -811,14 +763,6 @@ static void LineFollow_StartRun(uint32_t now_ms, int16_t initial_error)
     LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_A_MARKER_ARM_DISTANCE_MM);
   line_follow.a_marker_sequence_max_encoder_count =
     LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_A_MARKER_SEQUENCE_MAX_DISTANCE_MM);
-  /* 保留毫米宏定义供人工调参，编码器阈值随车轮直径和减速比自动重算。 */
-  line_follow.b_enter_encoder_count =
-    LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_B_ENTER_DISTANCE_MM);
-  line_follow.bc_arc_encoder_count =
-    LineFollow_DistanceMmToEncoderCounts(LINE_FOLLOW_BC_ARC_DISTANCE_MM);
-  line_follow.b_curve_start_encoder_count = 0U;
-  line_follow.bc_curve_active = 0U;
-  line_follow.bc_curve_finished = 0U;
   line_follow.stop_settle_start_ms = 0U;
   LineFollow_ResetAMarkerSequence();
   line_follow.state = LINE_FOLLOW_RUN;
@@ -868,7 +812,7 @@ static uint8_t LineFollow_SendTrackingCommand(int16_t line_error)
   float target_turn_rpm;
   float turn_rpm;
 
-  base_output_rpm = LineFollow_GetBaseOutputRpm();
+  base_output_rpm = (float)LINE_FOLLOW_BASE_OUTPUT_RPM;
   error_delta = (float)(line_error - line_follow.last_control_error);
   d_turn_rpm = LineFollow_Clamp(error_delta * LINE_FOLLOW_KD_RPM_PER_ERROR_DELTA,
                                  -LINE_FOLLOW_MAX_D_TURN_RPM,
@@ -1016,7 +960,6 @@ static void LineFollow_Control(void)
         line_follow.state = LINE_FOLLOW_FAULT;
         break;
       }
-      LineFollow_UpdateBCSpeedSegment();
       if (LineFollow_HasReturnedToA(line_mask) != 0U)
       {
         LineFollow_StartStopA(now_ms);
@@ -1057,7 +1000,6 @@ static void LineFollow_Control(void)
         line_follow.state = LINE_FOLLOW_FAULT;
         break;
       }
-      LineFollow_UpdateBCSpeedSegment();
       if (LineFollow_HasReturnedToA(line_mask) != 0U)
       {
         LineFollow_StartStopA(now_ms);
