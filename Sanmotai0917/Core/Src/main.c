@@ -57,6 +57,7 @@ TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 
@@ -116,6 +117,7 @@ volatile uint32_t command_timer_start = 0;   // ��¼��ʼ��ʱ��ʱ
 volatile int16_t motor1_current_position = 0;
 volatile int16_t motor2_current_position = 0;
 volatile uint8_t line_sensor_raw = 0;
+uint8_t lora_rx_byte;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -125,6 +127,7 @@ static void MX_CAN_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART3_UART_Init(void);
 // 0917 �������ڴ���2���յĻ���������СΪ22�ֽ� RHS
 #define UART2_RX_BUFFER_SIZE 22 
 uint8_t huart2_rx_buffer[UART2_RX_BUFFER_SIZE];
@@ -141,6 +144,19 @@ void rep(void);
 #define LINE_FOLLOW_ENCODER_COUNTS_PER_MOTOR_REV   8192U /* 电机轴每圈的反馈编码器计数。 */
 #define LINE_FOLLOW_WHEEL_CIRCUMFERENCE_UM       204204U /* 直径 65 mm 车轮的周长，单位：微米。 */
 
+/* LoRa 透明传输协议：帧格式为 AA 55 SRC CMD RID SUM。 */
+#define LORA_FRAME_HEADER_0                      0xAAU /* 帧头第 1 字节。 */
+#define LORA_FRAME_HEADER_1                      0x55U /* 帧头第 2 字节。 */
+#define LORA_FRAME_SIZE                             6U /* 固定帧长，单位：字节。 */
+#define LORA_SOURCE_CAR                          0x01U /* 小车发送方编号。 */
+#define LORA_SOURCE_GROUND                       0x10U /* 地面站发送方编号。 */
+#define LORA_COMMAND_READY                       0x01U /* 小车就绪并等待启动命令。 */
+#define LORA_COMMAND_START                       0x02U /* 地面站允许小车启动。 */
+#define LORA_COMMAND_STOPPED                     0x03U /* 小车已到终点并停稳。 */
+#define LORA_READY_PERIOD_MS                      500U /* 未启动时 READY 的发送周期。 */
+#define LORA_STOPPED_PERIOD_MS                    100U /* STOPPED 重发间隔。 */
+#define LORA_STOPPED_REPEAT_COUNT                   3U /* STOPPED 连续发送次数。 */
+
 /* A 点终点判定：先经过 C、D，再按右侧先扫线、左侧后扫线的顺序确认。 */
 #define LINE_FOLLOW_A_MARKER_ARM_DISTANCE_MM      6200U /* 达到该平均行程前忽略所有终点标记。 */
 #define LINE_FOLLOW_A_MARKER_MIN_SIDE_SENSORS       2U /* 单侧横线标记至少需要检测到的黑线传感器数量；右侧与左侧合计为 4 路。 */
@@ -156,7 +172,7 @@ void rep(void);
 #define LINE_FOLLOW_START_DELAY_MS                3000U /* 上电后开始检测黑线前的等待时间。 */
 #define LINE_FOLLOW_FEEDBACK_TIMEOUT_MS           100U  /* CAN 电机反馈丢失判定阈值。 */
 #define LINE_FOLLOW_RUN_TIMEOUT_MS                85000U /* 连续运行的最大时间保护。 */
-#define LINE_FOLLOW_BASE_OUTPUT_RPM               36    /* 直线循迹基础速度。 */
+#define LINE_FOLLOW_BASE_OUTPUT_RPM               32    /* 直线循迹基础速度。 */
 #define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* 针对当前车架的恒定向右修正量。 */
 #define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           3    /* 右转时额外增加的修正量。 */
 #define LINE_FOLLOW_STRAIGHT_TRIM_TARGET_RPM     -2.0f  /* 直线专用补偿目标；正值向右修正，黑线偏车身左侧时使用负值向左修正。 */
@@ -223,11 +239,24 @@ typedef struct
   uint8_t encoder_ready;
 } LineFollowControl;
 
+typedef struct
+{
+  uint32_t last_ready_ms;
+  uint32_t last_stopped_ms;
+  uint8_t run_id;
+  uint8_t rx_frame[LORA_FRAME_SIZE];
+  uint8_t rx_index;
+  uint8_t armed;
+  volatile uint8_t start_received;
+  uint8_t stopped_sent_count;
+} LoraProtocol;
+
 /* 传感器映射标定：仅在修改模块接线或安装位置后调整。 */
 /* 原始位顺序为 L01、L02、L03、L04、R01、R02、R03、R04。 */
 /* 物理从左到右顺序为 L01、L02、L03、L04、R04、R03、R02、R01。 */
 static const int8_t line_sensor_weight[8] = {-7, -5, -3, -1, 7, 5, 3, 1};
 static LineFollowControl line_follow = {LINE_FOLLOW_WAIT_FEEDBACK};
+static LoraProtocol lora_protocol = {0};
 
 static float LineFollow_Clamp(float value, float min_value, float max_value)
 {
@@ -557,6 +586,123 @@ static void LineFollow_UpdateEncoder(void)
   }
 }
 
+static uint8_t LoraProtocol_Checksum(const uint8_t *frame)
+{
+  return (uint8_t)(frame[2] + frame[3] + frame[4]);
+}
+
+static uint8_t LoraProtocol_SendFrame(uint8_t source, uint8_t command)
+{
+  uint8_t frame[LORA_FRAME_SIZE];
+
+  if (HAL_GPIO_ReadPin(LORA_AUX_GPIO_Port, LORA_AUX_Pin) == GPIO_PIN_SET)
+  {
+    return 0U;
+  }
+
+  frame[0] = LORA_FRAME_HEADER_0;
+  frame[1] = LORA_FRAME_HEADER_1;
+  frame[2] = source;
+  frame[3] = command;
+  frame[4] = lora_protocol.run_id;
+  frame[5] = LoraProtocol_Checksum(frame);
+
+  return (HAL_UART_Transmit(&huart3, frame, LORA_FRAME_SIZE, 5U) == HAL_OK) ? 1U : 0U;
+}
+
+static void LoraProtocol_Arm(uint32_t now_ms)
+{
+  uint16_t seed;
+
+  if (lora_protocol.armed != 0U)
+  {
+    return;
+  }
+
+  seed = motor_feedback[0].angle ^ motor_feedback[1].angle ^ (uint16_t)now_ms;
+  lora_protocol.run_id = (uint8_t)seed;
+  if (lora_protocol.run_id == 0U)
+  {
+    lora_protocol.run_id = 0xA5U;
+  }
+  lora_protocol.last_ready_ms = now_ms - LORA_READY_PERIOD_MS;
+  lora_protocol.armed = 1U;
+}
+
+static void LoraProtocol_OnRxByte(uint8_t byte)
+{
+  if (lora_protocol.rx_index == 0U)
+  {
+    if (byte == LORA_FRAME_HEADER_0)
+    {
+      lora_protocol.rx_frame[0] = byte;
+      lora_protocol.rx_index = 1U;
+    }
+    return;
+  }
+
+  if (lora_protocol.rx_index == 1U)
+  {
+    if (byte == LORA_FRAME_HEADER_1)
+    {
+      lora_protocol.rx_frame[1] = byte;
+      lora_protocol.rx_index = 2U;
+    }
+    else if (byte == LORA_FRAME_HEADER_0)
+    {
+      lora_protocol.rx_frame[0] = byte;
+    }
+    else
+    {
+      lora_protocol.rx_index = 0U;
+    }
+    return;
+  }
+
+  lora_protocol.rx_frame[lora_protocol.rx_index] = byte;
+  lora_protocol.rx_index++;
+
+  if (lora_protocol.rx_index >= LORA_FRAME_SIZE)
+  {
+    if ((LoraProtocol_Checksum(lora_protocol.rx_frame) == lora_protocol.rx_frame[5]) &&
+        (lora_protocol.rx_frame[2] == LORA_SOURCE_GROUND) &&
+        (lora_protocol.rx_frame[3] == LORA_COMMAND_START) &&
+        (lora_protocol.armed != 0U) &&
+        (lora_protocol.rx_frame[4] == lora_protocol.run_id))
+    {
+      lora_protocol.start_received = 1U;
+    }
+    lora_protocol.rx_index = 0U;
+  }
+}
+
+static void LoraProtocol_Task(uint32_t now_ms)
+{
+  if ((lora_protocol.armed != 0U) && (lora_protocol.start_received == 0U))
+  {
+    if ((uint32_t)(now_ms - lora_protocol.last_ready_ms) >= LORA_READY_PERIOD_MS)
+    {
+      if (LoraProtocol_SendFrame(LORA_SOURCE_CAR, LORA_COMMAND_READY) != 0U)
+      {
+        lora_protocol.last_ready_ms = now_ms;
+      }
+    }
+    return;
+  }
+
+  if ((line_follow.state == LINE_FOLLOW_DONE) &&
+      (lora_protocol.stopped_sent_count < LORA_STOPPED_REPEAT_COUNT) &&
+      ((lora_protocol.stopped_sent_count == 0U) ||
+       ((uint32_t)(now_ms - lora_protocol.last_stopped_ms) >= LORA_STOPPED_PERIOD_MS)))
+  {
+    if (LoraProtocol_SendFrame(LORA_SOURCE_CAR, LORA_COMMAND_STOPPED) != 0U)
+    {
+      lora_protocol.last_stopped_ms = now_ms;
+      lora_protocol.stopped_sent_count++;
+    }
+  }
+}
+
 static void LineFollow_ResetPid(PID_TypeDef *pid)
 {
   pid->target = 0.0f;
@@ -722,8 +868,12 @@ static void LineFollow_Control(void)
       }
       if (LineFollow_FeedbackFresh(now_ms) != 0U)
       {
-        line_follow.state = LINE_FOLLOW_START_DELAY;
-        line_follow.state_start_ms = now_ms;
+        LoraProtocol_Arm(now_ms);
+        if (lora_protocol.start_received != 0U)
+        {
+          line_follow.state = LINE_FOLLOW_START_DELAY;
+          line_follow.state_start_ms = now_ms;
+        }
       }
       break;
 
@@ -934,6 +1084,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   CanTxBuf[0]=0x02;
   CanTxBuf[1]=0x02;
@@ -945,6 +1096,10 @@ int main(void)
   CanTxBuf[7]=0x01;    
   CAN_Filter_Init();
   Set_moto_current(0, 0, 0, 0);
+  if (HAL_UART_Receive_IT(&huart3, &lora_rx_byte, 1U) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
 #if 0
 
@@ -1075,6 +1230,7 @@ if (DutyUpdateFlag)
   uint32_t control_tick = HAL_GetTick();
   while (1)
   {
+    LoraProtocol_Task(HAL_GetTick());
     if ((uint32_t)(HAL_GetTick() - control_tick) >= 10U)
     {
       control_tick += 10U;
@@ -1284,6 +1440,27 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -1302,6 +1479,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LED0_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LORA_M1_GPIO_Port, LORA_M1_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : LED0_Pin */
   GPIO_InitStruct.Pin = LED0_Pin;
@@ -1309,6 +1487,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LORA_M1_Pin */
+  GPIO_InitStruct.Pin = LORA_M1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LORA_M1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LORA_AUX_Pin */
+  GPIO_InitStruct.Pin = LORA_AUX_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(LORA_AUX_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : TRACK_R_D01_Pin TRACK_R_D02_Pin TRACK_R_D03_Pin TRACK_R_D04_Pin */
   GPIO_InitStruct.Pin = TRACK_R_D01_Pin|TRACK_R_D02_Pin|TRACK_R_D03_Pin|TRACK_R_D04_Pin;
@@ -1332,6 +1523,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   /* Prevent unused argument(s) compilation warning */
 	
 	uint8_t tx_buffer[1];
+
+  if (huart->Instance == USART3)
+  {
+    LoraProtocol_OnRxByte(lora_rx_byte);
+    HAL_UART_Receive_IT(&huart3, &lora_rx_byte, 1U);
+    return;
+  }
 
   if ( huart->Instance == USART1)
   {

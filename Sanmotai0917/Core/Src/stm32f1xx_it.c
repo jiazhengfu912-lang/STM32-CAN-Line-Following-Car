@@ -58,6 +58,7 @@ extern char RxCnt;
 extern CAN_HandleTypeDef hcan;
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2; //g
+extern UART_HandleTypeDef huart3;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -232,6 +233,11 @@ void USART2_IRQHandler(void) //g
 { //g
   HAL_UART_IRQHandler(&huart2); //g
 } //g
+
+void USART3_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart3);
+}
 
 /* USER CODE BEGIN 1 */
 
