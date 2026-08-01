@@ -176,7 +176,7 @@ void rep(void);
 #define LINE_FOLLOW_BASE_OUTPUT_RPM               36    /* 直线循迹基础速度。 */
 #define LINE_FOLLOW_RIGHT_BIAS_RPM                 6    /* 针对当前车架的恒定向右修正量。 */
 #define LINE_FOLLOW_RIGHT_TURN_BOOST_RPM           4    /* 右转时额外增加的修正量。 */
-#define LINE_FOLLOW_STRAIGHT_TRIM_TARGET_RPM     -2.0f  /* 直线专用补偿目标；正值向右修正，黑线偏车身左侧时使用负值向左修正。 */
+#define LINE_FOLLOW_STRAIGHT_TRIM_TARGET_RPM      0.0f  /* 直线专用补偿目标；正值向右修正，黑线偏车身左侧时使用负值向左修正。 */
 #define LINE_FOLLOW_STRAIGHT_TRIM_RAMP_RPM        0.08f  /* 进入直线后每 10 ms 靠近目标补偿的最大变化量。 */
 #define LINE_FOLLOW_STRAIGHT_TRIM_RELEASE_RPM     0.25f  /* 进入弯道后每 10 ms 回零的最大变化量。 */
 #define LINE_FOLLOW_STRAIGHT_TURN_WINDOW_RPM      2.0f   /* 实际转向量接近恒定修正量时，判定为直线的允许范围。 */
