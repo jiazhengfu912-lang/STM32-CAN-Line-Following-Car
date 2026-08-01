@@ -153,6 +153,7 @@ void rep(void);
 #define LORA_COMMAND_READY                       0x01U /* 小车就绪并等待启动命令。 */
 #define LORA_COMMAND_START                       0x02U /* 地面站允许小车启动。 */
 #define LORA_COMMAND_STOPPED                     0x03U /* 小车已到终点并停稳。 */
+#define LORA_COMMAND_START_ACK                   0x04U /* 小车已校验并接收地面站的启动命令。 */
 #define LORA_READY_PERIOD_MS                      500U /* 未启动时 READY 的发送周期。 */
 #define LORA_STOPPED_PERIOD_MS                    100U /* STOPPED 重发间隔。 */
 #define LORA_STOPPED_REPEAT_COUNT                   3U /* STOPPED 连续发送次数。 */
@@ -258,6 +259,7 @@ typedef struct
   uint8_t rx_index;
   uint8_t armed;
   volatile uint8_t start_received;
+  volatile uint8_t start_ack_pending;
   uint8_t stopped_sent_count;
 } LoraProtocol;
 
@@ -716,9 +718,12 @@ static void LoraProtocol_OnRxByte(uint8_t byte)
         (lora_protocol.rx_frame[2] == LORA_SOURCE_GROUND) &&
         (lora_protocol.rx_frame[3] == LORA_COMMAND_START) &&
         (lora_protocol.armed != 0U) &&
-        (lora_protocol.rx_frame[4] == lora_protocol.run_id))
+        (lora_protocol.rx_frame[4] == lora_protocol.run_id) &&
+        (lora_protocol.start_received == 0U))
     {
       lora_protocol.start_received = 1U;
+      /* 串口中断内只置标志；由主循环发送 ACK，避免中断中阻塞发送。 */
+      lora_protocol.start_ack_pending = 1U;
     }
     lora_protocol.rx_index = 0U;
   }
@@ -726,6 +731,16 @@ static void LoraProtocol_OnRxByte(uint8_t byte)
 
 static void LoraProtocol_Task(uint32_t now_ms)
 {
+  /* 收到有效 START 后优先回复一次 ACK；ACK 发送成功前不进入启动延时。 */
+  if (lora_protocol.start_ack_pending != 0U)
+  {
+    if (LoraProtocol_SendFrame(LORA_SOURCE_CAR, LORA_COMMAND_START_ACK) != 0U)
+    {
+      lora_protocol.start_ack_pending = 0U;
+    }
+    return;
+  }
+
   if ((lora_protocol.armed != 0U) && (lora_protocol.start_received == 0U))
   {
     if ((uint32_t)(now_ms - lora_protocol.last_ready_ms) >= LORA_READY_PERIOD_MS)
@@ -925,7 +940,8 @@ static void LineFollow_Control(void)
       if (LineFollow_FeedbackFresh(now_ms) != 0U)
       {
         LoraProtocol_Arm(now_ms);
-        if (lora_protocol.start_received != 0U)
+        if ((lora_protocol.start_received != 0U) &&
+            (lora_protocol.start_ack_pending == 0U))
         {
           line_follow.state = LINE_FOLLOW_START_DELAY;
           line_follow.state_start_ms = now_ms;
