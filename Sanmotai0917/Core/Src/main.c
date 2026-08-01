@@ -264,8 +264,7 @@ typedef struct
 } LoraProtocol;
 
 /* 传感器映射标定：仅在修改模块接线或安装位置后调整。 */
-/* 原始位顺序为 L01、L02、L03、L04、R01、R02、R03、R04。 */
-/* 物理从左到右顺序为 L01、L02、L03、L04、R04、R03、R02、R01。 */
+/* 左侧物理从左到右为 D04、D03、D02、D01；右侧映射保持不变。 */
 static const int8_t line_sensor_weight[8] = {-7, -5, -3, -1, 7, 5, 3, 1};
 static LineFollowControl line_follow = {LINE_FOLLOW_WAIT_FEEDBACK};
 static LoraProtocol lora_protocol = {0};
@@ -287,11 +286,11 @@ static uint8_t LineSensor_ReadRaw(void)
 {
   uint8_t raw = 0U;
 
-  /* Bit order follows the electrical DO channel mapping, not physical position. */
-  raw |= (HAL_GPIO_ReadPin(TRACK_L_D01_GPIO_Port, TRACK_L_D01_Pin) == GPIO_PIN_SET) ? (1U << 0) : 0U;
-  raw |= (HAL_GPIO_ReadPin(TRACK_L_D02_GPIO_Port, TRACK_L_D02_Pin) == GPIO_PIN_SET) ? (1U << 1) : 0U;
-  raw |= (HAL_GPIO_ReadPin(TRACK_L_D03_GPIO_Port, TRACK_L_D03_Pin) == GPIO_PIN_SET) ? (1U << 2) : 0U;
-  raw |= (HAL_GPIO_ReadPin(TRACK_L_D04_GPIO_Port, TRACK_L_D04_Pin) == GPIO_PIN_SET) ? (1U << 3) : 0U;
+  /* 左侧 bit0~bit3 按物理从左到右读取：D04、D03、D02、D01。 */
+  raw |= (HAL_GPIO_ReadPin(TRACK_L_D04_GPIO_Port, TRACK_L_D04_Pin) == GPIO_PIN_SET) ? (1U << 0) : 0U;
+  raw |= (HAL_GPIO_ReadPin(TRACK_L_D03_GPIO_Port, TRACK_L_D03_Pin) == GPIO_PIN_SET) ? (1U << 1) : 0U;
+  raw |= (HAL_GPIO_ReadPin(TRACK_L_D02_GPIO_Port, TRACK_L_D02_Pin) == GPIO_PIN_SET) ? (1U << 2) : 0U;
+  raw |= (HAL_GPIO_ReadPin(TRACK_L_D01_GPIO_Port, TRACK_L_D01_Pin) == GPIO_PIN_SET) ? (1U << 3) : 0U;
   raw |= (HAL_GPIO_ReadPin(TRACK_R_D01_GPIO_Port, TRACK_R_D01_Pin) == GPIO_PIN_SET) ? (1U << 4) : 0U;
   raw |= (HAL_GPIO_ReadPin(TRACK_R_D02_GPIO_Port, TRACK_R_D02_Pin) == GPIO_PIN_SET) ? (1U << 5) : 0U;
   raw |= (HAL_GPIO_ReadPin(TRACK_R_D03_GPIO_Port, TRACK_R_D03_Pin) == GPIO_PIN_SET) ? (1U << 6) : 0U;
